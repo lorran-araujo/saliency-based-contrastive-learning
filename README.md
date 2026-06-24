@@ -7,11 +7,11 @@ This repository contains the official implementation of a semi-supervised semant
 The proposed approach leverages both labeled and unlabeled data through a teacher-student paradigm, combining consistency constraints with a contrastive objective that focuses on highly informative regions identified through saliency analysis. The method was designed for land use and land cover mapping in environmentally protected areas using high-resolution aerial imagery.
 
 <p align="center">
-  <img src="outputs/our.pdf" width="900">
+  <img src="outputs/our.png" width="900">
 </p>
 
 <p align="center">
-  <img src="outputs/negative_pairs_sampling.pdf" width="900">
+  <img src="outputs/negative_pairs_sampling.png" width="900">
 </p>
 
 <p align="center">
