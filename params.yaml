@@ -1,0 +1,92 @@
+# General settings
+results_path: /mnt/dados_sda/lorran/saliency-based-contrastive-learning/results/ICMbio_split50
+
+# Data settings
+window_size: [128, 128]   # largura x altura das janelas utilizadas
+split: '50' # proporcao dos dados nao rotulados em relação aos rotulados
+cache: true    # se true, deixa carregada as imagens ja utilizadas, melhorando significadamente o desempenho, mas exigindo mais de VRAM ou RAM
+
+dim_original: [2048, 2048]
+dim_entrada: [1024, 1024]
+root_dir: /mnt/dados_sda/lorran/saliency-based-contrastive-learning/data/ICMbio/data/resized_data/1024 # pasta com imagens e labels
+root_dir_txt: /mnt/dados_sda/lorran/saliency-based-contrastive-learning/data/ICMbio/txt_files # pasta com splits
+
+# APA ICMBIO BIZOTTO
+n_classes: 8
+classes:
+  - Urbano
+  - Mata
+  - Sombra
+  - Regeneracao
+  - Agricultura
+  - Rocha
+  - Solo
+  - Agua
+
+cross_validation: true # Se True, será usado cross-validation. Se False, será usado o conjunto completo
+kfold_type: "k_folds" # nome da pasta com txts referentes a cada fold
+folds: ["fold_0", "fold_1", "fold_2", "fold_3", "fold_4"]  # se não quiser CV, use ["full"]
+
+len_train: 6848
+bs: 16             
+len_unlabeled: 6848
+bs_unlabeled: 16 
+augmentation: false
+
+test_stride: 32  # 64, # se dim images = 2048 e windows_size = 256, escolher entre  16, 28, 32, 56, 64, 112, 224
+batch_test: 57   # 28, # se dim images = 2048, windows_size = 256 e test_stride = 32, escolher entre 3, 9, 19, 57. Se test_stride = 64, escolher entre 2, 4, 7, 8, 14, 16, 28, 49,
+
+early_stopping_patience: 30
+
+# Semi-supervised settings
+semi_supervised: true
+teacher: true
+semi_method: Our 
+
+consistency: true 
+contrastive: true
+
+noise: 0.2 # Intensidade do ruído adicionado às imagens não rotuladas
+w_consistency: 1.0
+w_contrastive: 0.1
+
+topk: 1800
+min_confidence: 0.6032147524185749
+num_vet_cont: 16
+num_ancoras: 5
+
+# Hardware
+cpu: null        # Se null → GPU
+device: cuda:2   # Qual GPU será utilizada
+precision: full  # 'full' ou 'half'
+
+# Optimizador
+optimizer_params:
+  optimizer: SGD
+  lr: 0.001
+  momentum: 0.9
+  weight_decay: 0.0005
+
+# Scheduler
+lrs_params:
+  type: multi
+  milestones: [25, 35, 45]
+  gamma: 0.1
+
+# Training
+maximum_epochs: 100
+save_epoch: 100
+print_each: 500
+
+# Loss function
+weights:
+loss:
+  name: CROSS_ENTROPY   # CROSS_ENTROPY or FOCAL_LOSS
+  params:
+    weights: equal # Escolha entre 'equal' ou 'calculate'. Se 'equal', os pesos serão iguais. Se 'calculate', os pesos serão calculados pelo arquivo `extra\weights_calculator.py`
+    alpha: 0.5     # Somente para FOCAL_LOSS. Informe um valor float. Default: 0.5
+    gamma: 2.0     # Somente para FOCAL_LOSS. Informe um valor float. Default: 2.0
+
+# Model
+model:
+  name: unet # chose unet or lanet
