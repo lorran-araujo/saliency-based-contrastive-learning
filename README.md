@@ -11,7 +11,7 @@ The proposed approach leverages both labeled and unlabeled data through a teache
 </p>
 
 <p align="center">
-  <img src="outputs/negative_pairs_sampling.png" width="900">
+  <img src="outputs/negatives_pairs_sampling.png" width="900">
 </p>
 
 <p align="center">
