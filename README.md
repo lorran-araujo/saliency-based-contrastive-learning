@@ -15,7 +15,7 @@ The proposed approach leverages both labeled and unlabeled data through a teache
 </p>
 
 <p align="center">
-  Overview of the proposed semi-supervised framework.
+  Overview of the proposed semi-supervised framework and negative sampling strategy.
 </p>
 
 ## Main Features
