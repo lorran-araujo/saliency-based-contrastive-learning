@@ -125,7 +125,7 @@ if __name__=='__main__':
             f.write("=================== MODEL RESULTS =================== \n \n")
             f.write(f"Model: {params['model']['name']} - Consistency: {params['consistency']} - Loss function: {params['loss']['name']} - Loss weights: {params['loss']['params']['weights']} - Optimizer: {params['optimizer_params']['optimizer']} - Augmentation: {params['augmentation']}\n")
             if params['consistency']:
-                f.write(f"Consistency from epoch: {params['consistency_from']} - Adaptive weight: {params['adaptive_weight']} - Noise: {params['noise']} - w_mc: {params['w_mc']} - w_oc: {params['w_oc']}\n")
+                f.write(f"Noise: {params['noise']} - w_consistency: {params['w_consistency']} - w_contrastive: {params['w_contrastive']}\n")
             f.write("Training time: {:.2f} hours - Num epochs: {} - Best epoch: {} - Best_val_loss: {}\n".format(training_time_hours, epoch, early_stopping.best_epoch, early_stopping.val_loss_min))
             f.write("Evaluation metrics: \n ")
             for info in informations:
@@ -140,8 +140,8 @@ if __name__=='__main__':
         print(f'Starting process of redimensioned prediction...')
 
         labels = load_original_test_labels(
-                    dir_original_labels=os.path.join(params['root_dir_original'], 'labels_modificadas'),
-                    dir_original_labels_txt='/prj/posgrad/lorran/pesquisa/dissertacao/data/test_labels.txt')
+                    dir_original_labels=os.path.join(params['root_dir'], 'labels'),
+                    dir_original_labels_txt=os.path.join(params['root_dir_txt'], 'test_labels.txt'))
 
         for fd in params['folds']:
             print(f'Fold: {fd}')

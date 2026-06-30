@@ -2,3 +2,8 @@ data/
 results/
 .venv/
 *.pth.tar
+__pycache__/common.cpython-312.pyc
+__pycache__/dataset.cpython-312.pyc
+__pycache__/models.cpython-312.pyc
+__pycache__/trainer.cpython-312.pyc
+__pycache__/utils.cpython-312.pyc

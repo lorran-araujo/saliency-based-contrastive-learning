@@ -1,5 +1,5 @@
 # General settings
-results_path: /mnt/dados_sda/lorran/saliency-based-contrastive-learning/results/ICMbio_split50
+results_path: /home/lorrantwo/Documentos/GitHub/saliency-based-contrastive-learning/results/ICMbio_split50
 
 # Data settings
 window_size: [128, 128]   # largura x altura das janelas utilizadas
@@ -8,8 +8,8 @@ cache: true    # se true, deixa carregada as imagens ja utilizadas, melhorando s
 
 dim_original: [2048, 2048]
 dim_entrada: [1024, 1024]
-root_dir: /mnt/dados_sda/lorran/saliency-based-contrastive-learning/data/ICMbio/data/resized_data/1024 # pasta com imagens e labels
-root_dir_txt: /mnt/dados_sda/lorran/saliency-based-contrastive-learning/data/ICMbio/txt_files # pasta com splits
+root_dir: /home/lorrantwo/Documentos/GitHub/saliency-based-contrastive-learning/data/ICMbio/data/resized_data/1024 # pasta com imagens e labels
+root_dir_txt: /home/lorrantwo/Documentos/GitHub/saliency-based-contrastive-learning/data/ICMbio/txt_files # pasta com splits
 
 # APA ICMBIO BIZOTTO
 n_classes: 8
@@ -27,10 +27,10 @@ cross_validation: true # Se True, será usado cross-validation. Se False, será 
 kfold_type: "k_folds" # nome da pasta com txts referentes a cada fold
 folds: ["fold_0", "fold_1", "fold_2", "fold_3", "fold_4"]  # se não quiser CV, use ["full"]
 
-len_train: 6848
-bs: 16             
-len_unlabeled: 6848
-bs_unlabeled: 16 
+len_train: 5440
+bs: 8             
+len_unlabeled: 6800
+bs_unlabeled: 10 
 augmentation: false
 
 test_stride: 32  # 64, # se dim images = 2048 e windows_size = 256, escolher entre  16, 28, 32, 56, 64, 112, 224
@@ -57,7 +57,7 @@ num_ancoras: 5
 
 # Hardware
 cpu: null        # Se null → GPU
-device: cuda:2   # Qual GPU será utilizada
+device: cuda:0   # Qual GPU será utilizada
 precision: full  # 'full' ou 'half'
 
 # Optimizador

@@ -1,0 +1,15 @@
+albumentations==1.4.24
+efficientnet-pytorch==0.7.1
+einops==0.8.2
+matplotlib==3.8.4
+mlxtend==0.23.1
+numpy==1.26.4
+pandas==2.2.2
+Pillow==10.4.0
+python-magic
+PyYAML==6.0.2
+scikit-image==0.22.0
+scikit-learn==1.4.2
+segmentation-models-pytorch==0.3.4
+torchinfo==1.8.0
+tqdm==4.66.5
