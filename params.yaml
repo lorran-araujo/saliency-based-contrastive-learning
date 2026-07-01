@@ -1,5 +1,5 @@
 # General settings
-results_path: /home/lorrantwo/Documentos/GitHub/saliency-based-contrastive-learning/results/ICMbio_split50
+results_path: ./results/ICMbio_split50
 
 # Data settings
 window_size: [128, 128]   # largura x altura das janelas utilizadas
@@ -8,8 +8,8 @@ cache: true    # se true, deixa carregada as imagens ja utilizadas, melhorando s
 
 dim_original: [2048, 2048]
 dim_entrada: [1024, 1024]
-root_dir: /home/lorrantwo/Documentos/GitHub/saliency-based-contrastive-learning/data/ICMbio/data/resized_data/1024 # pasta com imagens e labels
-root_dir_txt: /home/lorrantwo/Documentos/GitHub/saliency-based-contrastive-learning/data/ICMbio/txt_files # pasta com splits
+root_dir: ./data/ICMbio/data/resized_data/1024 # pasta com imagens e labels
+root_dir_txt: ./data/ICMbio/txt_files # pasta com splits
 
 # APA ICMBIO BIZOTTO
 n_classes: 8
