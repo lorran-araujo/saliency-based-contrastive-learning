@@ -356,21 +356,7 @@ Results will be stored in:
 ```text
 results/
 ```
-
 ---
-
-## Citation
-
-If you use this repository in your research, please cite:
-
-```bibtex
-@article{yourpaper2026,
-  title={Saliency-Based Contrastive Learning for Semi-Supervised Semantic Segmentation of Remote Sensing Images},
-  author={Author Names},
-  journal={Journal or Conference},
-  year={2026}
-}
-```
 
 ## 👥 Project Team
 
