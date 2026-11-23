@@ -1,6 +1,6 @@
 import warnings
+from copy import deepcopy
 from pathlib import Path
-from torch.autograd import Variable
 import torch.nn as nn
 import torch
 import os
@@ -11,27 +11,21 @@ from skimage import io
 from tqdm import tqdm
 
 from semi import contrastive_method
-from utils import make_optimizer, make_scheduler, metrics, save_test, grouper, convert_from_color, convert_to_color, count_sliding_window2, sliding_window2, gaussian_kernel, gaussian_square_map 
+from utils import (
+    calculate_cm,
+    convert_from_color,
+    count_sliding_window2,
+    grouper,
+    load_icmbio_label,
+    make_optimizer,
+    make_scheduler,
+    metrics_from_confusion_matrix,
+    palette,
+    resize_label_mask,
+    save_test,
+    sliding_window2,
+)
 from segmentation_models_pytorch.losses import DiceLoss, FocalLoss
-
-class ProjectionHead(nn.Module):
-    def __init__(self, in_channels=2048, out_dim=128):
-        super().__init__()
-        
-        self.proj = nn.Linear(in_channels, out_dim)
-
-    def forward(self, x):
-        """
-        x: Tensor de shape (B, C, H, W)
-        Retorna: Tensor de shape (B, H, W, out_dim)
-        """
-        # B, C, H, W = x.shape
-        # # Reorganiza para (B, H, W, C)
-        x = x.permute(0, 2, 3, 1).contiguous()
-        # Aplica a projeção em todos os pixels (flatten e projeta)
-        x = self.proj(x)  # shape (B, H, W, out_dim)
-        
-        return x
 
 class Trainer():
     """
@@ -60,7 +54,9 @@ class Trainer():
         self.losses = np.zeros(1000000)
         self.mean_losses = np.zeros(100000000)
         self.print_each = params['print_each'] or 100 
-        self.semi = semi
+        self.use_consistency = semi and params.get('consistency', True)
+        self.use_contrastive = semi and params.get('contrastive', True)
+        self.semi = self.use_consistency or self.use_contrastive
         
         self.epoch_supervised_loss = []
 
@@ -80,21 +76,25 @@ class Trainer():
         time_ = time_.replace(".", "")
         self.model_id = time_
 
-        # Create optimizer
-        self.optimizer = make_optimizer(self.params['optimizer_params'], self.net)
+        self.student_projection = None
+        self.teacher_projection = None
+        trainable = self.net
+        if self.use_contrastive:
+            reference = next(self.net.parameters())
+            self.student_projection = contrastive_method.ProjectionHead(self.net.contrastive_channels)
+            self.student_projection.to(device=reference.device, dtype=reference.dtype)
+            self.teacher_projection = deepcopy(self.student_projection).requires_grad_(False).eval()
+            trainable = nn.ModuleList([self.net, self.student_projection])
+
+        self.optimizer = make_optimizer(self.params['optimizer_params'], trainable)
         # Create scheduler
         self.scheduler = make_scheduler(self.params['lrs_params'], self.optimizer) if scheduler else None
 
         self.last_epoch = 0
 
-        # Load a previously model if it exists
-        if cbkp is not None:
-            self.load(cbkp)
-
         Path(os.path.join(self.params['results_folder'])).mkdir(parents=True, exist_ok=True)
-        
-        # After loading the model, so we can load the net model to copy student model params
-        if self.semi:    
+
+        if self.semi:
             self.teacher_load_student()
 
             self.semi_loss1 = []
@@ -102,6 +102,9 @@ class Trainer():
             self.semi_loss3 = []
             self.semi_loss4 = []
             self.semi_loss5 = []
+
+        if cbkp is not None:
+            self.load(cbkp)
 
     def teacher_load_student(self):
         if self.net_teacher is None:
@@ -131,20 +134,19 @@ class Trainer():
             'mean_losses': self.mean_losses,
             'epoch_loss': self.epoch_loss,
             'epoch_acc': self.epoch_acc,
+            'epoch_supervised_loss': self.epoch_supervised_loss,
+            'epoch_val_losses': self.epoch_val_losses,
             'iter_': self.iter_,
             'model_id': self.model_id,
             'model_state_dict': self.net.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
         }
 
-        # Salvar métricas extras se consistency estiver ativado
-        if getattr(self, "semi_supervised", False):
-            checkpoint.update({
-                'epoch_supervised_loss': getattr(self, "epoch_supervised_loss", None),
-                'epoch_val_losses': getattr(self, "epoch_val_losses", None),
-                'epoch_out_consistency_loss': getattr(self, "epoch_out_consistency_loss", None),
-                'epoch_multiscale_consistency_loss': getattr(self, "epoch_multiscale_consistency_loss", None),
-            })
+        if self.semi:
+            checkpoint['teacher_state_dict'] = self.net_teacher.state_dict()
+        if self.use_contrastive:
+            checkpoint['student_projection_state_dict'] = self.student_projection.state_dict()
+            checkpoint['teacher_projection_state_dict'] = self.teacher_projection.state_dict()
 
         # Salvar estado do scheduler, se existir
         if self.scheduler is not None:
@@ -169,21 +171,35 @@ class Trainer():
         self.model_id = checkpoint.get('model_id', "unknown_model")
         self.losses = checkpoint.get('losses', [])
         self.mean_losses = checkpoint.get('mean_losses', [])
-        self.epoch_loss = checkpoint.get('epoch_loss', None)
-        self.epoch_acc = checkpoint.get('epoch_acc', None)
+        self.epoch_loss = checkpoint.get('epoch_loss', [])
+        self.epoch_acc = checkpoint.get('epoch_acc', [])
         self.iter_ = checkpoint.get('iter_', 0)
 
-        # Restaurar atributos extras se consistency
-        if getattr(self, "consistency", False):
-            self.epoch_supervised_loss = checkpoint.get('epoch_supervised_loss', None)
-            self.epoch_val_losses = checkpoint.get('epoch_val_losses', None)
-            self.epoch_out_consistency_loss = checkpoint.get('epoch_out_consistency_loss', None)
-            self.epoch_multiscale_consistency_loss = checkpoint.get('epoch_multiscale_consistency_loss', None)
+        missing_history = [float('nan')] * len(self.epoch_loss)
+        self.epoch_supervised_loss = checkpoint.get('epoch_supervised_loss', missing_history.copy())
+        self.epoch_val_losses = checkpoint.get('epoch_val_losses', missing_history)
 
         # Carregar modelo e otimizador
         print("Loading checkpoint model...")
         self.net.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if self.semi:
+            if 'teacher_state_dict' in checkpoint:
+                self.net_teacher.load_state_dict(checkpoint['teacher_state_dict'])
+            else:
+                self.teacher_load_student()
+
+        optimizer_state = checkpoint['optimizer_state_dict']
+        if self.use_contrastive:
+            if 'student_projection_state_dict' in checkpoint:
+                self.student_projection.load_state_dict(checkpoint['student_projection_state_dict'])
+                self.teacher_projection.load_state_dict(checkpoint['teacher_projection_state_dict'])
+            else:
+                # Os checkpoints antigos só têm os parâmetros da rede no otimizador.
+                saved_params = optimizer_state['param_groups'][0]['params']
+                current_params = self.optimizer.state_dict()['param_groups'][0]['params']
+                saved_params.extend(current_params[len(saved_params):])
+                self.teacher_projection.load_state_dict(self.student_projection.state_dict())
+        self.optimizer.load_state_dict(optimizer_state)
 
         # Carregar scheduler se salvo
         if self.scheduler is not None:
@@ -217,124 +233,65 @@ class Trainer():
         else:
             return _prepare(l)
 
-    def test(self, test_loader = None, stride = None, window_size = None, batch_size = None, all=False):
-        """"
-        Test the network on the test set.
-        
-        Args:
-            test_loader: data loader for the test set
-            stride: stride for the sliding window
-            window_size: size of the sliding window
-            batch_size: batch size for the test set
-            all: if True, return all predictions and ground truths
-        """
-    
+    @torch.inference_mode()
+    def test(self, test_loader=None, stride=None, window_size=None, batch_size=None, all=False,
+             original_label_files=None):
+        """Run sliding-window inference and evaluate the resulting masks."""
         test_ld = test_loader if test_loader is not None else self.loader['test']
-        assert test_ld is not None, "Test_loader can't be None"
-
-        test_stride = stride if stride is not None else self.params['stride']
-        assert test_stride is not None, "Stride not set"
-
+        test_stride = stride if stride is not None else self.params.get('test_stride', self.params.get('stride'))
         test_ws = window_size if window_size is not None else self.params['window_size']
-        assert test_ws is not None, "Window size not set"
+        bs = batch_size if batch_size is not None else self.params['bs'] or 1
 
-        bs = batch_size if batch_size is not None else self.params['bs']
-        bs = bs if bs is not None else 1
+        image_files, label_files = test_ld.dataset.get_dataset()
+        if original_label_files is not None:
+            label_files = original_label_files
 
-        # Get all data in test data loader
-        input_ids, label_ids = test_ld.dataset.get_dataset()
-
-        # Use the network on the test set
-        test_images = ((1 / 255) * np.asarray(io.imread(id)[:,:,:3], dtype='float32') for id in input_ids)
-        test_labels = (np.asarray(io.imread(id)[:,:,:3], dtype='uint8') for id in label_ids)
-        eroded_labels = (convert_from_color(io.imread(id)[:,:,:3]) for id in label_ids)
-        
+        output_dir = Path(self.params['results_folder'])
+        inference_dir = output_dir / 'inference'
+        inference_dir.mkdir(parents=True, exist_ok=True)
+        classes = self.params['classes']
+        class_ids = range(len(classes))
+        confusion_matrix = np.zeros((len(classes), len(classes)), dtype=np.int64)
         all_preds = []
         all_gts = []
-        
-        # Switch the network to inference mode
         self.net.eval()
-        
-        for img, gt, gt_e, image_path in tqdm(zip(test_images, test_labels, eroded_labels, input_ids), total=len(input_ids), leave=False):
 
-            filepath = os.path.split(image_path)[1].split('.')[0]
-            Path(os.path.join(self.params['results_folder'], 'inference')).mkdir(parents=True, exist_ok=True)
-            
-            pred = np.zeros(img.shape[:2] + (self.params['n_classes'],))
+        pairs = zip(image_files, label_files, strict=True)
+        for image_file, label_file in tqdm(pairs, total=len(image_files), leave=False):
+            image = np.asarray(io.imread(image_file)[:, :, :3], dtype='float32') / 255
+            if original_label_files is not None:
+                label = resize_label_mask(load_icmbio_label(label_file), image.shape[:2][::-1])
+            elif len(classes) == len(palette):
+                label = load_icmbio_label(label_file)
+            else:
+                label = convert_from_color(io.imread(label_file)[:, :, :3])
+            if label.shape != image.shape[:2]:
+                raise ValueError(f'Label {label_file} has shape {label.shape}, expected {image.shape[:2]}.')
 
-            total = count_sliding_window2(img, step=test_stride, window_size=test_ws) // bs
-            for i, coords in enumerate(tqdm(grouper(bs, sliding_window2(img, step=test_stride, window_size=test_ws)), total=total, leave=False)):
-                
-                # # Display in progress results
-                # if i > 0 and total > 10 and i % int(10 * total / 100) == 0:
-                #     _pred = np.argmax(pred, axis=-1) #Usar argmax do pytorch
-                #     fig = plt.figure()
-                #     fig.add_subplot(1,3,1)
-                #     plt.imshow(np.asarray(255 * img, dtype='uint8'))
-                #     fig.add_subplot(1,3,2)
-                #     plt.imshow(convert_to_color(_pred))
-                #     fig.add_subplot(1,3,3)
-                #     plt.imshow(gt)
-                #     fig.savefig(f"./tmp/test_progress", dpi=fig.dpi, bbox_inches='tight')
-                #     plt.close(fig)
-                        
-                # Build the tensor (ex: 2048px/256px = batch size patches de 256x256)
-                with torch.no_grad():
-                    image_patches = [np.copy(img[x:x+w, y:y+h]).transpose((2,0,1)) for x,y,w,h in coords]
-                    image_patches = np.asarray(image_patches)
-                    #image_patches = Variable(torch.from_numpy(image_patches).cuda())
-                    image_patches = Variable(torch.from_numpy(image_patches).to(self.params['device']))
-                
-                # Do the inference
-                outs = self._get_first(self.net(image_patches))
-                outs = outs.data.cpu().numpy()
-                # trocar pred pela função do pytorch
-                
-                # Fill in the results array
-                for out, (x, y, w, h) in zip(outs, coords):
-                    out = out.transpose((1,2,0)) # Usar transpose do Pytorch
-                    pred[x:x+w, y:y+h] += out # ponderar essa soma para mais próximo do centro?
-                del(outs)
+            scores = np.zeros(image.shape[:2] + (self.params['n_classes'],))
+            windows = sliding_window2(image, step=test_stride, window_size=test_ws)
+            total_windows = count_sliding_window2(image, step=test_stride, window_size=test_ws)
+            total_batches = (total_windows + bs - 1) // bs
+            for coords in tqdm(grouper(bs, windows), total=total_batches, leave=False):
+                patches = np.stack([image[x:x+w, y:y+h].transpose(2, 0, 1) for x, y, w, h in coords])
+                inputs = torch.from_numpy(patches).to(self.params['device'])
+                outputs = self._get_first(self.net(inputs)).cpu().numpy()
+                for patch, (x, y, w, h) in zip(outputs, coords):
+                    scores[x:x+w, y:y+h] += patch.transpose(1, 2, 0)
 
-            pred = np.argmax(pred, axis=-1)
+            prediction = scores.argmax(axis=-1)
+            confusion_matrix += calculate_cm(prediction.ravel(), label.ravel(), class_ids)
+            if all:
+                all_preds.append(prediction)
+                all_gts.append(label)
 
-            # # Display the result
-            # fig = plt.figure(figsize=(30, 10))
-            
-            # ax1 = fig.add_subplot(1,3,1)
-            # ax1.set_title('RGB')
-            # plt.imshow(np.asarray(255 * img, dtype='uint8'))
-
-            # ax2 = fig.add_subplot(1,3,2)
-            # ax2.set_title('Pred')
-            # plt.imshow(convert_to_color(pred))
-
-            # ax3 = fig.add_subplot(1,3,3)
-            # ax3.set_title('GT')
-            # plt.imshow(gt)
-            
-            # fig.savefig(os.path.join(self.params['results_folder'], 'inference', filepath), dpi=fig.dpi, bbox_inches='tight')
-            # plt.close(fig)
-
-            all_preds.append(pred)
-            all_gts.append(gt_e)
-        
-        # metrics calculation
-        accuracy, informations = metrics(
-            predictions=np.concatenate([p.ravel() for p in all_preds]), 
-            gts=np.concatenate([p.ravel() for p in all_gts]).ravel(),
-            label_values=self.params['classes'],
-            params=self.params,
-            all=all,
-            filepath=filepath
+        accuracy, information = metrics_from_confusion_matrix(
+            confusion_matrix, classes, output_dir if all else inference_dir,
         )
-
         if all:
-            save_test(acc=accuracy, all_preds=all_preds, all_gts=all_gts, 
-                        path=os.path.join(self.params['results_folder'], 'results.npz'))
-            return accuracy, all_preds, all_gts, informations
-        else:
-            return accuracy
+            save_test(acc=accuracy, all_preds=all_preds, all_gts=all_gts, path=str(output_dir / 'results.npz'))
+            return accuracy, all_preds, all_gts, information
+        return accuracy
 
     @staticmethod
     def _get_first (result):
@@ -342,16 +299,21 @@ class Trainer():
             return result[0]
         return result
 
-    def _update_teacher(self, alpha=0.99): # ta fazendo certo?
+    @torch.no_grad()
+    def _update_teacher(self, alpha=0.99):
         """
         Atualiza os pesos da rede professora (teacher) com EMA usando os pesos da estudante (student).
         A chamada deve ser feita a cada batch de treinamento.
         Args:
             alpha (float): Fator de suavização (quanto maior, mais lenta a atualização).
         """
-        with torch.no_grad():  
-            for t_param, s_param in zip(self.net_teacher.parameters(), self.net.parameters()):
-                t_param.data.mul_(alpha).add_((1 - alpha) * s_param.data)
+        for teacher, student in zip(self.net_teacher.parameters(), self.net.parameters()):
+            teacher.lerp_(student, 1 - alpha)
+        for teacher, student in zip(self.net_teacher.buffers(), self.net.buffers()):
+            teacher.copy_(student)
+        if self.use_contrastive:
+            for teacher, student in zip(self.teacher_projection.parameters(), self.student_projection.parameters()):
+                teacher.lerp_(student, 1 - alpha)
     
     def _train(self):
         """"

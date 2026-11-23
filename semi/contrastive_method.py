@@ -156,9 +156,7 @@ def contrastive_loss_from_sampled_anchor(embeddings_w_proj, embeddings_s_proj, a
     return total_loss / max(count, 1)
 
 def saliency_contrastive(obj):
-    """"
-    Train the network.
-    """
+    """Treina a rede com as perdas semissupervisionadas habilitadas."""
     train_running_loss = 0.0
     train_running_correct = 0
     train_running_supervised_loss = 0.0
@@ -166,98 +164,84 @@ def saliency_contrastive(obj):
     semi_loss2 = 0.0
     semi_loss3 = 0.0
     semi_loss4 = 0.0
-    semi_loss5 = 0.0
+    obj.last_epoch += 1
 
-    obj.last_epoch = obj.scheduler.last_epoch + 1        
-
-    loaders = zip(obj.loader['train'], obj.loader['train_unlabeled']) # tomar cuidado para ter o mesmo número de batches nos dois loaders
-
-    pbar = tqdm(loaders,         
-                ncols=150,       
-                total=min(len(obj.loader['train']), len(obj.loader['train_unlabeled'])),             
+    train_loader = obj.loader['train']
+    unlabeled_loader = obj.loader['train_unlabeled']
+    steps = min(len(train_loader), len(unlabeled_loader))
+    pbar = tqdm(zip(train_loader, unlabeled_loader),
+                ncols=150,
+                total=steps,
                 bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining} {postfix}]' 
                 )
-    
-    #obj.net.train()
-    #obj.net_teacher.eval()
-    
+
     counter = 0
     for (inputs, labels), unlabeled_inputs in pbar:
-        
-        # labeled training
-        inputs, labels = obj.prepare([inputs, labels]) 
-        counter+=labels.size(0)
-            
-        outputs = obj.net(inputs) 
-        supervised_loss = obj.criterion(obj._get_first(outputs), labels)
+        obj.net.train()
+        inputs, labels = obj.prepare([inputs, labels])
+        counter += labels.size(0)
+        outputs = obj._get_first(obj.net(inputs))
+        supervised_loss = obj.criterion(outputs, labels)
+        loss = supervised_loss
 
-        # unlabeled training
         unlabeled_inputs = obj.prepare([unlabeled_inputs])
+        noisy_inputs = aug.add_noise(unlabeled_inputs, obj.params['noise'])
+        obj.net.eval()
 
-        obj.net.eval() 
-    
-        # # foward pass in teacher network
         with torch.no_grad():
-            unlabeled_outputs_t, unlabeled_embeddings_t = obj.net_teacher(unlabeled_inputs) # teacher com imagens não rotuladas sem ruido
+            teacher_outputs, teacher_embeddings = obj.net_teacher(unlabeled_inputs)
 
-        # # weak noise
-        unlabeled_inputs_gaussian_noise = aug.add_noise(unlabeled_inputs, obj.params['noise'])
+        consistency_cutmix = consistency_grid = consistency = contrastive = 0.0
+        if obj.use_consistency:
+            cutmix_inputs, lam, coords = aug.cutmix(noisy_inputs, beta=1.0, return_all=True)
+            grid_inputs, perms = aug.grid_shuffle(noisy_inputs, grid_size=(4, 4), return_perm=True)
+            cutmix_outputs = obj._get_first(obj.net(cutmix_inputs))
+            grid_outputs = obj._get_first(obj.net(grid_inputs))
+            cutmix_targets = aug.cutmix(teacher_outputs, lm=lam, coords=coords)
+            grid_targets = aug.grid_shuffle(teacher_outputs, grid_size=(4, 4), perm=perms)
 
-        # # strong noise
-        noisy_images1, lam, coords = aug.cutmix(unlabeled_inputs_gaussian_noise, beta=1.0, return_all=True)
-        noisy_images3, perms = aug.grid_shuffle(unlabeled_inputs_gaussian_noise, grid_size=(4,4), return_perm=True)
+            cutmix_loss = F.mse_loss(
+                F.normalize(cutmix_outputs, dim=1, eps=1e-8),
+                F.normalize(cutmix_targets, dim=1, eps=1e-8),
+            )
+            grid_loss = F.mse_loss(
+                F.normalize(grid_outputs, dim=1, eps=1e-8),
+                F.normalize(grid_targets, dim=1, eps=1e-8),
+            )
+            loss = loss + obj.params['w_consistency'] * (cutmix_loss + grid_loss)
+            consistency_cutmix = cutmix_loss.item()
+            consistency_grid = grid_loss.item()
+            consistency = consistency_cutmix + consistency_grid
 
-        # # foward pass in student network
-        unlabeled_outputs_s, unlabeled_embeddings_s = obj.net(unlabeled_inputs_gaussian_noise) # output only with gaussian to student
-        unlabeled_outputs1_s = obj._get_first(obj.net(noisy_images1))
-        unlabeled_outputs3_s = obj._get_first(obj.net(noisy_images3))
-        #obj.net.train()
+        if obj.use_contrastive:
+            student_outputs, student_embeddings = obj.net(noisy_inputs)
+            student_vectors = obj.student_projection(student_embeddings[-1])
+            with torch.no_grad():
+                teacher_vectors = obj.teacher_projection(teacher_embeddings[-1])
 
-        # # # consistency loss
+            batch_size, height, width, _ = student_vectors.shape
+            positions = batch_size * height * width
+            count = min(obj.params['num_vet_cont'], positions)
+            flat_indices = np.random.choice(positions, size=count, replace=False)
+            batch, offset = divmod(flat_indices, height * width)
+            row, col = divmod(offset, width)
+            indices = torch.as_tensor(np.stack((batch, row, col), axis=1), device=noisy_inputs.device)
 
-        unlabeled_outputs1_t = aug.cutmix(unlabeled_outputs_t, lm=lam, coords=coords)
-        unlabeled_outputs3_t = aug.grid_shuffle(unlabeled_outputs_t, grid_size=(4,4), perm=perms)
-
-        loss_consistency_out1 = F.mse_loss(F.normalize(unlabeled_outputs1_s, dim=1, eps=1e-8), F.normalize(unlabeled_outputs1_t, dim=1, eps=1e-8))
-        loss_consistency_out3 = F.mse_loss(F.normalize(unlabeled_outputs3_s, dim=1, eps=1e-8), F.normalize(unlabeled_outputs3_t, dim=1, eps=1e-8))
-
-        loss_consistency_out = loss_consistency_out1 + loss_consistency_out3
-
-        # # # contrastive loss
-    
-        # # select inference of only output layer of embedding
-        embeddings_t = unlabeled_embeddings_t[-1] # shape (B, F, H, W) - teacher embedding
-        embeddings_s = unlabeled_embeddings_s[-1] # shape (B, F, H, W) - student embedding
-        
-        # Fazendo embedding para menos filtros
-        proj_head_teacher = ProjectionHead(in_channels=embeddings_t.shape[1], out_dim=128).to(obj.params['device']) 
-        proj_head_student = ProjectionHead(in_channels=embeddings_s.shape[1], out_dim=128).to(obj.params['device'])
-
-        embeddings_t_proj = proj_head_teacher(embeddings_t)   # (B, H, W, C)
-        embeddings_s_proj = proj_head_student(embeddings_s) # (B, H, W, C)
-        
-        # # sorting N random indices
-        N = obj.params['num_vet_cont']
-        B, H, W, _ = embeddings_s_proj.shape
-        flat_idx = np.random.choice(B*H*W, size=N, replace=False)
-        
-        b, hw = divmod(flat_idx, H * W)
-        h, w = divmod(hw, W)
-        sorted_indices = list(zip(b, h, w))
-        sorted_indices = torch.tensor(sorted_indices, dtype=torch.long, device=obj.params['device'])
-
-        # # calculating saliency maps
-        saliency_maps = saliency.generate_saliency_maps_of_sampled_index(obj.net, unlabeled_inputs_gaussian_noise, sorted_indices=sorted_indices,device=obj.params['device'])
-                
-        # # sampling negative pairs for the ancor vectors 
-        
-        M_ancoras = obj.params['num_ancoras']    
-        anchors, negative_pairs,_ = neg.negative_sample_by_saliency_of_sampled_index(sorted_indices, saliency_maps, M_ancoras, unlabeled_outputs_s, device=obj.params['device'], top_k_pixels=obj.params['topk'], min_confidence=obj.params['min_confidence'])
-    
-        loss_contrastive = contrastive_loss_from_sampled_anchor(embeddings_t_proj, embeddings_s_proj, anchors, negative_pairs)    
-        
-        # FINAL LOSS
-        loss = supervised_loss + obj.params['w_consistency']*loss_consistency_out + obj.params['w_contrastive']*loss_contrastive
+            saliency_maps = saliency.generate_saliency_maps_of_sampled_index(
+                obj.net, noisy_inputs, sorted_indices=indices, device=noisy_inputs.device,
+            )
+            with torch.no_grad():
+                anchors, negative_pairs, _ = neg.negative_sample_by_saliency_of_sampled_index(
+                    indices, saliency_maps, obj.params['num_ancoras'], student_outputs,
+                    device=noisy_inputs.device,
+                    top_k_pixels=min(obj.params['topk'], student_outputs.shape[-2] * student_outputs.shape[-1]),
+                    min_confidence=obj.params['min_confidence'],
+                )
+            contrastive_loss = contrastive_loss_from_sampled_anchor(
+                teacher_vectors, student_vectors, anchors, negative_pairs,
+            )
+            loss = loss + obj.params['w_contrastive'] * contrastive_loss
+            contrastive = contrastive_loss.item()
 
         obj.optimizer.zero_grad()
         loss.backward()
@@ -271,21 +255,19 @@ def saliency_contrastive(obj):
                 'Epoch': f'{obj.last_epoch:2d}', 
                 'Total_Loss': f'{loss.item():.4f}',
                 'S_Loss': f'{supervised_loss.item():.4f}',
-                'CO_Loss1': f'{loss_consistency_out1.item():.3f}',
-                #'CO_Loss2': f'{loss_consistency_out2.item():.2f}',
-                'CO_Loss3': f'{loss_consistency_out3.item():.3f}',
-                'Consistency': f'{loss_consistency_out.item():.3f}',
-                'Contrastive': f'{loss_contrastive.item():.3f}'
+                'CO_Loss1': f'{consistency_cutmix:.3f}',
+                'CO_Loss3': f'{consistency_grid:.3f}',
+                'Consistency': f'{consistency:.3f}',
+                'Contrastive': f'{contrastive:.3f}'
             })
         
         train_running_supervised_loss += supervised_loss.item()
         train_running_loss += loss.item()
-        semi_loss1 += loss_contrastive.item()
-        semi_loss2 += loss_consistency_out.item()
-        semi_loss3 += loss_consistency_out1.item()
-        semi_loss4 += loss_consistency_out3.item()
-        outputs = obj._get_first(outputs)
-        _, preds = torch.max(outputs.data, 1)
+        semi_loss1 += contrastive
+        semi_loss2 += consistency
+        semi_loss3 += consistency_cutmix
+        semi_loss4 += consistency_grid
+        preds = outputs.argmax(dim=1)
         train_running_correct += preds.eq(labels).sum().item()
         obj.losses[obj.iter_] = loss.item()
 
@@ -294,7 +276,6 @@ def saliency_contrastive(obj):
             obj.mean_losses[obj.iter_] = np.mean(obj.losses[max(0,obj.iter_-100):obj.iter_])
             
         obj.iter_ += 1
-        del(inputs, labels, unlabeled_inputs, supervised_loss, loss)#loss_consistency_out, loss)#, loss_consistency_multiscale)
     
     # evaluate the model on validation dataset
     if 'val' in obj.loader and obj.loader['val'] is not None:
@@ -317,15 +298,15 @@ def saliency_contrastive(obj):
         obj.scheduler.step()
 
     # saving consistency's loss
-    obj.semi_loss1.append(semi_loss1 / len(obj.loader['train_unlabeled']))
-    obj.semi_loss2.append(semi_loss2 / len(obj.loader['train_unlabeled']))
-    obj.semi_loss3.append(semi_loss3 / len(obj.loader['train_unlabeled']))
-    obj.semi_loss4.append(semi_loss4 / len(obj.loader['train_unlabeled']))
-    obj.semi_loss5.append(semi_loss5 / len(obj.loader['train_unlabeled']))
+    obj.semi_loss1.append(semi_loss1 / steps)
+    obj.semi_loss2.append(semi_loss2 / steps)
+    obj.semi_loss3.append(semi_loss3 / steps)
+    obj.semi_loss4.append(semi_loss4 / steps)
+    obj.semi_loss5.append(0.0)
 
     # Loss and accuracy for the complete epoch.
-    obj.epoch_supervised_loss.append(train_running_supervised_loss/len(obj.loader['train']))        
-    obj.epoch_loss.append(train_running_loss/len(obj.loader['train']))
+    obj.epoch_supervised_loss.append(train_running_supervised_loss / steps)
+    obj.epoch_loss.append(train_running_loss / steps)
     obj.epoch_acc.append(100. * train_running_correct / counter)
 
 def only_C(obj):

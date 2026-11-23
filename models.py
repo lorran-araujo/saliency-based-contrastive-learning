@@ -1820,6 +1820,7 @@ class Attention_Embedding(nn.Module):
 class LANet(nn.Module):
     def __init__(self, in_channels=3, num_classes=7, pretrained=True):
         super(LANet, self).__init__()
+        self.contrastive_channels = num_classes
         self.FCN = FCN(in_channels, num_classes)
         
         self.PA0 = nn.Sequential(nn.Conv2d(256, 64, kernel_size=1),
@@ -1867,6 +1868,7 @@ class UNett(nn.Module):
                     in_channels=in_channels, 
                     classes=classes, 
                     activation=activation)
+        self.contrastive_channels = self.base_model.encoder.out_channels[-1]
         
         feat_dim = 128
 
@@ -1907,6 +1909,7 @@ class UNett_resized(nn.Module):
                     in_channels=in_channels, 
                     classes=classes, 
                     activation=activation)
+        self.contrastive_channels = self.base_model.encoder.out_channels[-1]
 
         self.conv_down = nn.Conv2d(3, 3, kernel_size=3, stride=2, padding=1)
         self.conv_up = nn.ConvTranspose2d(classes, classes, kernel_size=4, stride=2, padding=1)

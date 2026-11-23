@@ -1,15 +1,17 @@
 import torch
 import os
 import random
+from pathlib import Path
 import numpy as np
 from skimage import io
-from utils import convert_from_color, get_random_pos, convert_to_color
+from utils import convert_from_color, get_random_pos, load_icmbio_label, resize_label_mask
 import matplotlib.pyplot as plt
 
 EXTS = ['tif', 'tiff', 'jpg', 'png']
 
 class DatasetIcmbio(torch.utils.data.Dataset):
-    def __init__(self, data_files, window_size, len, label_files=None, n_channels=3, cache=True, augmentation=True):
+    def __init__(self, data_files, window_size, len, label_files=None, n_channels=3, cache=True,
+                 augmentation=True, icmbio_labels=False, original_labels_dir=None):
         super(DatasetIcmbio, self).__init__()
         
         self.data_files = data_files
@@ -19,6 +21,8 @@ class DatasetIcmbio(torch.utils.data.Dataset):
         self.cache = cache
         self.augmentation = augmentation
         self.len = len
+        self.icmbio_labels = icmbio_labels
+        self.original_labels_dir = original_labels_dir
 
         for f in self.data_files:
             if not os.path.isfile(f):
@@ -84,8 +88,21 @@ class DatasetIcmbio(torch.utils.data.Dataset):
             if random_idx in self.label_cache_:
                 label = self.label_cache_[random_idx]
             else:
-                image_label = io.imread(self.label_files[random_idx])
-                label = np.asarray(convert_from_color(image_label), dtype='int64')
+                label_file = self.label_files[random_idx]
+                if self.icmbio_labels:
+                    original_file = (
+                        Path(self.original_labels_dir) / Path(label_file).name
+                        if self.original_labels_dir is not None else None
+                    )
+                    if original_file is not None and original_file.is_file():
+                        label = resize_label_mask(load_icmbio_label(original_file), (data.shape[-1], data.shape[-2]))
+                    else:
+                        label = load_icmbio_label(label_file)
+                        if label.shape != data.shape[-2:]:
+                            raise ValueError(f'Label {label_file} has shape {label.shape}, expected {data.shape[-2:]}.')
+                    label = label.astype('int64')
+                else:
+                    label = np.asarray(convert_from_color(io.imread(label_file)), dtype='int64')
                 if self.cache:
                     self.label_cache_[random_idx] = label
             label_p = label[x1:x2, y1:y2]

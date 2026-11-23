@@ -3,56 +3,54 @@ import numpy as np
 import torch
 import os
 import pandas as pd
-import re
+from pathlib import Path
 from PIL import Image
-import cv2
 
 import sys
 sys.path.append('./transformation')
 from models import ConvolutionalAutoencoder
 
-def natural_sort_key(s):
-        return [int(text) if text.isdigit() else text.lower() for text in re.split('(\d+)', s)]
+def original_test_label_paths(image_files, label_files, original_labels_dir):
+    """Resolve original masks in test image order using the split manifests."""
+    if not image_files or len(image_files) != len(label_files):
+        raise ValueError("The test split must contain one label per image.")
 
-def load_original_test_labels( dir_original_labels, dir_original_labels_txt):
-    
-    # loading labels
-    test = pd.read_table(dir_original_labels_txt, header=None).values
-    test = [os.path.join(dir_original_labels, f[0]) for f in test]
+    image_ids = [Path(path).stem for path in image_files]
+    label_names = [Path(path).name for path in label_files]
+    labels_by_id = {Path(name).stem: name for name in label_names}
+    if len(set(image_ids)) != len(image_ids) or len(labels_by_id) != len(label_names):
+        raise ValueError("The test split contains duplicate image or label identifiers.")
 
-    imgs = []
-    for i in test:
-        img = Image.open(i)
-        img = np.array(img)
-        img = convert_from_color(np.array(img))
-        imgs.append(img)
-    labels = np.array(imgs)
+    # Use tile identifiers when the masks and images share a naming convention.
+    # Distinct naming conventions use the explicit pairs in the split manifests.
+    if set(image_ids) == labels_by_id.keys():
+        label_names = [labels_by_id[tile_id] for tile_id in image_ids]
+    else:
+        for tile_id, label_name in zip(image_ids, label_names):
+            label_id = Path(label_name).stem
+            if label_id != tile_id and (tile_id in labels_by_id or label_id in image_ids):
+                raise ValueError(f"Test manifests disagree on the pairing for tile {tile_id}.")
 
-    return labels
+    label_paths = [Path(original_labels_dir) / name for name in label_names]
+    for path in label_paths:
+        if not path.is_file():
+            raise FileNotFoundError(f"Original test label not found: {path}")
+    return label_paths
 
 
-def load_predictions_resized(dir_predictions, dim_original):
-    
-    # loading predictions
-    prediction_files = [f for f in os.listdir(dir_predictions) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-    prediction_files.sort(key=natural_sort_key)
+def iter_original_test_pairs(predictions, image_files, original_label_files, dim_original):
+    """Yield each tile ID, resized prediction and original-resolution label."""
+    if len(predictions) != len(image_files) or len(predictions) != len(original_label_files):
+        raise ValueError("Original-resolution evaluation requires a prediction and label for each test image.")
 
-    predictions = []
-    for file in prediction_files:
-        img_path = os.path.join(dir_predictions, file)
-        img = Image.open(img_path).convert("RGB")
-        img = convert_from_color(np.array(img))
-        predictions.append(np.array(img)) 
-    predictions = np.array(predictions)
+    original_size = tuple(dim_original)
+    for prediction, image_path, label_path in zip(predictions, image_files, original_label_files):
+        label = load_icmbio_label(label_path)
+        label_size = (label.shape[1], label.shape[0])
+        if label_size != original_size:
+            raise ValueError(f"Original label {label_path} has size {label_size}, expected {original_size}.")
 
-    # resizing predictions
-    resized_imgs = []
-    for img in predictions:
-        resized = cv2.resize(img, dim_original, interpolation=cv2.INTER_LINEAR)
-        resized_imgs.append(resized)
-    predictions = np.array(resized_imgs)
-
-    return predictions
+        yield Path(image_path).stem, resize_label_mask(prediction, original_size), label
 
 def gaussian_square_map(size, sigma=0.5):
     """
@@ -623,10 +621,34 @@ def load_datasets(params, subject):
             labels = pd.read_table(os.path.join(params['root_dir_txt'], 'splits', params['split'], params['kfold_type'], params['fold'], "labels.txt"), header=None).values
             labels = [os.path.join(labels_dir, f[0]) for f in labels]
         else:
-            images = pd.read_table(os.path.join(params['root_dir_txt'], "splits", "test_images.txt"), header=None).values
-            images = [os.path.join(images_dir, f[0]) for f in images]
-            labels = pd.read_table(os.path.join(params['root_dir_txt'], "splits", "test_labels.txt"), header=None).values
-            labels = [os.path.join(labels_dir, f[0]) for f in labels]
+            split_dir = os.path.join(params['root_dir_txt'], 'splits', params['split'])
+            image_list = os.path.join(split_dir, 'val_images.txt')
+            label_list = os.path.join(split_dir, 'val_labels.txt')
+            for manifest in (image_list, label_list):
+                if not os.path.isfile(manifest):
+                    raise FileNotFoundError(
+                        f"Independent validation requires {manifest} when cross_validation is false."
+                    )
+
+            with open(image_list, encoding='utf-8') as entries:
+                images = [os.path.join(images_dir, line.strip()) for line in entries if line.strip()]
+            with open(label_list, encoding='utf-8') as entries:
+                labels = [os.path.join(labels_dir, line.strip()) for line in entries if line.strip()]
+            if not images or len(images) != len(labels):
+                raise ValueError("Validation lists must contain the same nonzero number of entries.")
+
+            validation_paths = {os.path.realpath(path) for path in images + labels}
+            other_subjects = ['train', 'test']
+            if params.get('semi_supervised') and (params.get('consistency', True) or params.get('contrastive', True)):
+                other_subjects.append('train_unlabeled')
+            for other_subject in other_subjects:
+                other_images, other_labels = load_datasets(params, other_subject)
+                other_paths = {os.path.realpath(path) for path in other_images + (other_labels or [])}
+                overlap = validation_paths & other_paths
+                if overlap:
+                    raise ValueError(
+                        f"Validation overlaps with {other_subject}: {min(overlap)}"
+                    )
 
     elif subject == 'train_unlabeled':
         images = pd.read_table(os.path.join(params['root_dir_txt'], "splits", params['split'], "train_unlabeled_images.txt"), header=None).values
@@ -716,6 +738,9 @@ palette = {
     7 : (84, 117, 168),     # Água (azul escuro)
 }
 
+ICMBIO_INVERT_PALETTE = {color: class_id for class_id, color in palette.items()}
+
+
 palette2 = {
     0: (255,255,255), # "impervious_surface",
     1: (0,0,255),    # "building",
@@ -746,6 +771,23 @@ def convert_from_color(arr_3d, palette=invert_palette):
         arr_2d[m] = i
 
     return arr_2d
+
+
+def load_icmbio_label(path):
+    """Read the class IDs from a mask encoded with the ICMBio palette."""
+    with Image.open(path) as image:
+        rgb_mask = image.convert("RGB")
+        colors = rgb_mask.getcolors(maxcolors=len(ICMBIO_INVERT_PALETTE))
+        if colors is None or any(color not in ICMBIO_INVERT_PALETTE for _, color in colors):
+            raise ValueError(f"Label {path} contains colors outside the ICMBio palette.")
+        return convert_from_color(np.asarray(rgb_mask), palette=ICMBIO_INVERT_PALETTE)
+
+
+def resize_label_mask(mask, size):
+    """Resize class IDs with nearest-neighbor interpolation to (width, height)."""
+    image = Image.fromarray(np.asarray(mask, dtype=np.int32))
+    return np.asarray(image.resize(tuple(size), Image.Resampling.NEAREST))
+
 
 def get_random_pos(img, window_shape):
     """ Extract of 2D random patch of shape window_shape in the image """
@@ -879,19 +921,19 @@ def visualize_augmentations(dataset, idx=0, samples=10, cols=5):
     plt.show()
 
 def metrics(predictions, gts, label_values, params, all=False, filepath=None):
-    
+    cm = calculate_cm(predictions, gts, label_values=range(len(label_values)))
+    output_dir = params['results_folder'] if all else filepath
+    return metrics_from_confusion_matrix(cm, label_values, output_dir)
+
+
+def metrics_from_confusion_matrix(cm, label_values, output_dir):
     txt = []
-    cm = confusion_matrix(
-            gts,
-            predictions,
-            labels=range(len(label_values)))
-    
-    fig, ax = plot_confusion_matrix(conf_mat=cm,
-                                    colorbar=True,
-                                    show_absolute=False,
-                                    show_normed=True,
-                                    class_names=label_values)
-    fig.savefig(f"{params['results_folder']}/cm" if all else f'{filepath}/cm' , dpi=fig.dpi, bbox_inches='tight')
+    fig, _ = plot_confusion_matrix(conf_mat=cm,
+                                   colorbar=True,
+                                   show_absolute=False,
+                                   show_normed=True,
+                                   class_names=label_values)
+    fig.savefig(os.path.join(output_dir, 'cm'), dpi=fig.dpi, bbox_inches='tight')
     plt.close(fig)
     
     print("Confusion matrix :")

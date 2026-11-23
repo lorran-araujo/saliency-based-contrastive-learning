@@ -81,7 +81,7 @@ A contrastive objective is computed using highly informative regions selected th
 | Noise Intensity | 0.2 |
 | Top-K Salient Pixels | 1800 |
 | Confidence Threshold | 0.603 |
-| Anchors per Image | 5 |
+| Anchors per Batch | 5 |
 | Contrastive Vectors | 16 |
 
 ---
@@ -183,16 +183,16 @@ root_dir_txt/
 ├── train_labels.txt
 ├── test_images.txt
 ├── test_labels.txt
-└── split/
+└── splits/
 ```
 
 Each `.txt` file must contain one file path or file name per line.
 
-The `split/` directory contains the semi-supervised splits used in the experiments. For example, for the 50% labeled setting, the structure must be:
+The `splits/` directory contains the semi-supervised splits used in the experiments. For example, for the 50% labeled setting, the structure must be:
 
 ```text
 root_dir_txt/
-└── split/
+└── splits/
     └── 50/
         ├── train_images.txt
         ├── train_labels.txt
@@ -210,7 +210,7 @@ If cross-validation is enabled, the selected split folder must also contain a `k
 
 ```text
 root_dir_txt/
-└── split/
+└── splits/
     └── 50/
         └── k_folds/
             ├── fold_0/
@@ -232,6 +232,8 @@ root_dir_txt/
 
 Each fold directory contains the image and label lists associated with that fold. During cross-validation, one fold is used as the validation set, while the remaining folds are used for supervised training.
 
+With `cross_validation: false` and `folds: ["full"]`, put the independent validation lists `val_images.txt` and `val_labels.txt` in `root_dir_txt/splits/<split>/`. Keep these tiles out of the training, unlabeled and test lists.
+
 Therefore, for the code to run correctly, the expected directory structure is:
 
 ```text
@@ -244,7 +246,7 @@ root_dir_txt/
 ├── train_labels.txt
 ├── test_images.txt
 ├── test_labels.txt
-└── split/
+└── splits/
     └── 50/
         ├── train_images.txt
         ├── train_labels.txt
@@ -267,7 +269,7 @@ root_dir_txt/
                 └── labels.txt
 ```
 
-To use another labeled-data proportion, change the `split` parameter in the YAML file and create the corresponding folder inside `root_dir_txt/split/`.
+To use another labeled-data proportion, change the `split` parameter in the YAML file and create the corresponding folder inside `root_dir_txt/splits/`.
 
 For example:
 
@@ -279,7 +281,7 @@ requires the following directory:
 
 ```text
 root_dir_txt/
-└── split/
+└── splits/
     └── 25/
 ```
 
@@ -296,6 +298,12 @@ batch_test: 57
 ```
 
 This strategy enables efficient inference on high-resolution scenes while maintaining manageable GPU memory usage.
+
+Each fold is evaluated with the student checkpoint that achieved the lowest validation loss. The last training checkpoint is saved separately.
+
+When `dim_original` differs from `dim_entrada`, set `root_dir_original` to the directory that contains `labels_modificadas/`. Original masks are matched to the test tiles using the test manifests. Predictions are resized with nearest-neighbor interpolation and evaluated under each fold's `original_results/`.
+
+For the eight-class ICMBio configuration, training and validation also use the original masks when available, resizing them with nearest-neighbor interpolation. Otherwise the input masks must use the eight exact ICMBio colors.
 
 ---
 
@@ -345,11 +353,13 @@ pip install -r requirements.txt
 
 ## Training
 
-Run training with:
+Run training from the repository root so that the relative paths in `params.yaml` resolve correctly.
 
 ```bash
 python main.py --config params.yaml
 ```
+
+The `consistency` and `contrastive` flags independently control the two semi-supervised loss terms. Setting both to `false` runs supervised training.
 
 Results will be stored in:
 
