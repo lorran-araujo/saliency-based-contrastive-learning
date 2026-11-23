@@ -33,7 +33,7 @@ The proposed approach leverages both labeled and unlabeled data through a teache
 
 ## Dataset
 
-Experiments were conducted on a remote sensing dataset from the Environmental Protection Area of APA-Petrópolis (Rio de Janeiro, Brazil), containing manually annotated land use and land cover classes. The dataset is publicly available at:
+Experiments were conducted on a remote sensing dataset from the Environmental Protection Area of APA-Petrópolis (Rio de Janeiro, Brazil), containing manually annotated land use and land cover classes. The dataset is publicly available at: <https://drive.google.com/file/d/1hHo6FVeA4C7MwR2MskplENceXSIGsqds/view>.
 
 ### Classes
 
@@ -366,30 +366,39 @@ Results will be stored in:
 ```text
 results/
 ```
+---
+
+## 👥 Project Team
+
+- Gilson Antonio Giraldi (LNCC)
+- Mauren Luise Sguario de Andrade (UTFPR)
 
 ---
 
-## Citation
+## 🙏 Acknowledgements
 
-If you use this repository in your research, please cite:
+This work was supported by and developed in collaboration with the following institutions:
 
-```bibtex
-@article{yourpaper2026,
-  title={Saliency-Based Contrastive Learning for Semi-Supervised Semantic Segmentation of Remote Sensing Images},
-  author={Author Names},
-  journal={Journal or Conference},
-  year={2026}
-}
-```
+- LNCC
+- UTFPR
+- ICMBio
+- CAPES
+- FAPERJ
 
 ---
 
-## License
+## 📄 License
 
-This project is released under the MIT License.
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**. See the `LICENSE` file for more details.
 
 ---
 
-## Acknowledgements
+## Credits
 
-This work was developed for land use and land cover mapping in environmentally protected areas using remote sensing imagery. We thank all collaborators and institutions involved in data preparation, annotation, and experimental evaluation.
+The initial structure of this project—including dataset processing, data loading, and other infrastructure components—was based on the following repository:
+
+**Original Repository:** <https://github.com/fabricioifc/icmbio>
+
+Parts of the source code were adapted from the original project in accordance with the terms of the **GNU General Public License v3.0 (GPL-3.0)**, under which the original repository was released.
+
+We gratefully acknowledge the authors of the original repository for making their work publicly available.
