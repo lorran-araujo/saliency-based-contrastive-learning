@@ -331,16 +331,16 @@ def negative_sample_by_saliency_of_sampled_index(sorted_index, saliency_map, N_a
     Args:
     sorted_index: tensor de shape (N, 3) que contem N indices (b,i,j).
     saliency_map: lista de tensores com os respectivos mapas de saliencia para cada um dos sorted_index.
-    N_ancoras: número de âncoras a serem sorteadas de sorted_index.
+        N_ancoras: número máximo de âncoras sorteadas entre os vetores com classe definida.
     pred_logits: tensor [B, num_classes, H, W] com as probabilidades/logits preditos.
     device: 'cuda' ou 'cpu'.
     top_k_pixels: quantos pixeis mais salientes considerar.
     min_confidence: fração mínima para definir a classe dominante.
     
     Retorna:
-        anchors: tensor [N_ancoras, 3] com índices das âncoras.
+        anchors: tensor [A, 3] com índices das âncoras, com A <= N_ancoras.
         neg_samples: lista de tensores, cada tensor contém índices [M_neg, 3] correspondentes aos pares negativos de cada âncora.
-        anchor_classes: tensor [N_ancoras] com a classe definida de cada âncora.
+        anchor_classes: tensor [A] com a classe definida de cada âncora.
     """
 
     B, num_classes, H, W = pred_logits.shape
@@ -374,16 +374,17 @@ def negative_sample_by_saliency_of_sampled_index(sorted_index, saliency_map, N_a
         else:
             index_classes.append(-1)
 
-    index_classes = torch.tensor(index_classes, device=device)
-
-    # sortear âncoras
-    perm = torch.randperm(len(sorted_index), device=device)
-    anchors = sorted_index[perm[:N_ancoras]]
-    anchor_classes = index_classes[perm[:N_ancoras]]
+    index_classes = torch.tensor(index_classes, dtype=torch.long, device=device)
+    has_class = index_classes != -1
+    candidates = has_class.nonzero(as_tuple=True)[0]
+    perm = torch.randperm(candidates.numel(), device=device)
+    anchor_indices = candidates[perm[:N_ancoras]]
+    anchors = sorted_index[anchor_indices]
+    anchor_classes = index_classes[anchor_indices]
 
     neg_samples = []
-    for anc_class, anc_idx in zip(anchor_classes, anchors):
-        mask = (index_classes != anc_class) & (index_classes != -1)
+    for anc_class in anchor_classes:
+        mask = has_class & (index_classes != anc_class)
         negs = sorted_index[mask] 
         neg_samples.append(negs)
 
